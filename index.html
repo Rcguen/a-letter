@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>A Special Birthday 🎁</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Sacramento&family=Cormorant+Garamond:wght@300;400&display=swap" rel="stylesheet"/>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{
+      overflow:hidden;
+      background: #7ec8a0;
+      transition: background 2s ease;
+    }
+    canvas{position:fixed;inset:0;display:block}
+    #hint{
+      position:fixed;bottom:40px;left:50%;transform:translateX(-50%);
+      font-size:1.1rem;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+      color:#ffe44d;pointer-events:none;z-index:10;
+      transition:opacity .6s ease, color .6s ease;animation:hf 2.5s ease-in-out infinite;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.4), 0 0 20px rgba(255,228,77,0.3);
+    }
+    #hint.hidden{opacity:0;animation:none;}
+    @keyframes hf{0%,100%{opacity:.5;transform:translateX(-50%) translateY(0)}50%{opacity:1;transform:translateX(-50%) translateY(-6px)}}
+    #music-btn{
+      position:fixed;top:20px;right:20px;width:48px;height:48px;border:none;
+      border-radius:50%;background:rgba(255,255,255,.6);backdrop-filter:blur(8px);
+      cursor:pointer;font-size:1.3rem;display:flex;align-items:center;justify-content:center;
+      box-shadow:0 6px 20px rgba(100,160,110,.25);z-index:10;
+    }
+    #music-btn.playing{animation:rs 8s linear infinite}
+    @keyframes rs{to{transform:rotate(360deg)}}
+    #vignette{
+      position:fixed;inset:0;pointer-events:none;z-index:5;
+      background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.25) 100%);
+    }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "./three.module.min.js" } }
+  </script>
+</head>
+<body>
+<div id="hint">Click the gift to begin ✨</div>
+<button id="music-btn" aria-label="Toggle music">🎵</button>
+<audio id="bg-music" loop src="music.mp3"></audio>
+<div id="vignette"></div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ── GLOBAL ERROR LOGGING ─────────────────────────────────────────
+window.addEventListener('error', (e) => {
+  console.error("Script Error:", e.message, "at", e.filename, ":", e.lineno);
+});
+
+// ── STATE ────────────────────────────────────────────────────────
+const hint = document.getElementById('hint');
+const musicBtn = document.getElementById('music-btn');
+const bgMusic = document.getElementById('bg-music');
+let step = 0;
+let musicStarted = false; // FIXED: Added missing variable
+
+class Spring {
+  constructor(val, tension = 0.2, damp = 0.7) {
+    this.val = val; this.target = val;
+    this.vel = 0; this.tension = tension; this.damp = damp;
+  }
+  update() {
+    this.vel += (this.target - this.val) * this.tension;
+    this.vel *= this.damp;
+    this.val += this.vel;
+  }
+}
+
+// Initial physics state
+const anim = {
+  gSX: new Spring(1, 0.2, 0.6), // gift scale X (bouncy)
+  gSY: new Spring(1, 0.2, 0.6), // gift scale Y
+  lR: new Spring(0, 0.1, 0.7),  // lid rot X
+  eY: new Spring(1.4, 0.1, 0.7), // env Y (starts inside box)
+  eRZ: new Spring(0, 0.15, 0.6),  // env rot Z
+  fR: new Spring(0, 0.15, 0.6),   // flap rot X
+  lY: new Spring(1.4, 0.12, 0.7), // letter Y (starts inside env)
+  lZ: new Spring(0, 0.12, 0.7),    // letter Z 
+  lRZ: new Spring(0, 0.15, 0.6),   // letter Rot Z
+  lV: new Spring(0, 0.1, 0.8),    // letter visibility (opacity)
+  gI: new Spring(0, 0.1, 0.8), // light intensities
+  lI: new Spring(0, 0.1, 0.8),
+  tI: new Spring(0, 0.1, 0.8)
+};
+
+// ── RENDERER ─────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x7ec8a0);
+scene.fog = new THREE.FogExp2(0x7ec8a0, 0.022);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 1.8, 8);
+camera.lookAt(0, 1.0, 0);
+
+// ── RESPONSIVE DEVICE CONFIG ─────────────────────────────────────
+let deviceCfg = { camZ: 8, camY: 1.8, parallax: 1.2, parallaxY: 0.6, pixelRatio: 2, maxPfx: 35 };
+
+function getDeviceConfig() {
+  const w = window.innerWidth;
+  if (w < 768) {
+    // Mobile
+    return { camZ: 11, camY: 2.2, parallax: 0.4, parallaxY: 0.2, pixelRatio: 1.5, maxPfx: 12 };
+  } else if (w < 1100) {
+    // Tablet
+    return { camZ: 9.5, camY: 2.0, parallax: 0.8, parallaxY: 0.4, pixelRatio: 1.5, maxPfx: 20 };
+  }
+  // Desktop
+  return { camZ: 8, camY: 1.8, parallax: 1.2, parallaxY: 0.6, pixelRatio: 2, maxPfx: 35 };
+}
+
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  deviceCfg = getDeviceConfig();
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, deviceCfg.pixelRatio));
+  // Reduce shadow quality on mobile for perf
+  if (w < 768) {
+    renderer.shadowMap.type = THREE.BasicShadowMap;
+  } else {
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  }
+}
+onResize(); // apply on load
+
+// ── LIGHTS ───────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xdcf5e8, 0.9));
+const sun = new THREE.DirectionalLight(0xffeedd, 1.3);
+sun.position.set(5, 12, 8);
+sun.castShadow = true;
+Object.assign(sun.shadow.camera, { left: -10, right: 10, top: 10, bottom: -10, near: .5, far: 40 });
+sun.shadow.mapSize.setScalar(2048);
+scene.add(sun);
+
+const topLamp = new THREE.PointLight(0xffffee, 0, 15);
+topLamp.position.set(0, 6, 4);
+scene.add(topLamp);
+
+const giftLight = new THREE.PointLight(0xbdf5d0, 0, 8);
+giftLight.position.set(0, 1.5, 0);
+scene.add(giftLight);
+
+const letterLight = new THREE.PointLight(0xffffee, 0, 10);
+letterLight.position.set(0, 2, 2);
+scene.add(letterLight);
+
+// ── HELPERS ──────────────────────────────────────────────────────
+const lerp = (a, b, t) => a + (b - a) * t;
+const mat = (col, o = {}) => new THREE.MeshStandardMaterial({ color: col, roughness: .65, metalness: .05, ...o });
+
+function addEdges(mesh) {
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: 0xd4bc96, transparent: true, opacity: 0.6 }));
+  edges.position.z = 0.001; mesh.add(edges);
+}
+
+function emojiTex(emoji, size = 128) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const x = c.getContext('2d');
+  x.font = `${size * .75}px serif`;
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+  x.fillText(emoji, size / 2, size / 2);
+  return new THREE.CanvasTexture(c);
+}
+
+// ── SOUND EFFECTS (Web Audio API — no files needed) ──────────────
+let audioCtx;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+const SFX = {
+  // Soft pop — gift box click
+  pop() {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(600, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(150, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.2);
+  },
+
+  // Whoosh — lid opening / swoosh
+  whoosh() {
+    const ctx = getAudioCtx();
+    const bufSize = ctx.sampleRate * 0.4;
+    const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(800, ctx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(2000, ctx.currentTime + 0.15);
+    filter.frequency.exponentialRampToValueAtTime(400, ctx.currentTime + 0.35);
+    filter.Q.value = 2;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    src.connect(filter).connect(gain).connect(ctx.destination);
+    src.start(); src.stop(ctx.currentTime + 0.4);
+  },
+
+  // Spring boing — envelope popping out
+  boing() {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(220, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.08);
+    osc.frequency.exponentialRampToValueAtTime(330, ctx.currentTime + 0.25);
+    osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.35);
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.4);
+  },
+
+  // Snap — wax seal breaking
+  snap() {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(1200, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.08);
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.1);
+    // Add a little crackle
+    const bufSize = ctx.sampleRate * 0.06;
+    const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 3);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g2 = ctx.createGain();
+    g2.gain.setValueAtTime(0.2, ctx.currentTime);
+    g2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.06);
+    src.connect(g2).connect(ctx.destination);
+    src.start(); src.stop(ctx.currentTime + 0.06);
+  },
+
+  // Magical chime — letter reveal
+  chime() {
+    const ctx = getAudioCtx();
+    const notes = [523, 659, 784, 1047]; // C5, E5, G5, C6
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.1;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.15, start + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.6);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start); osc.stop(start + 0.6);
+    });
+  },
+
+  // Soft sparkle — stickers appearing
+  sparkle() {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(2000, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(4000, ctx.currentTime + 0.05);
+    osc.frequency.exponentialRampToValueAtTime(1500, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.2);
+  }
+};
+
+// ── OBJECTS ──────────────────────────────────────────────────────
+const giftGroup = new THREE.Group();
+scene.add(giftGroup);
+let lidPivot, giftClickables = [];
+
+// Base Ground — darker tinted disc + shadow layer
+const gndBase = new THREE.Mesh(
+  new THREE.CircleGeometry(25, 64),
+  new THREE.MeshStandardMaterial({ color: 0x5aaa7e, roughness: 1, metalness: 0 })
+);
+gndBase.rotation.x = -Math.PI / 2;
+gndBase.position.y = -0.002;
+gndBase.receiveShadow = true;
+scene.add(gndBase);
+
+const gnd = new THREE.Mesh(new THREE.CircleGeometry(25, 64), new THREE.ShadowMaterial({ opacity: 0.35 }));
+gnd.rotation.x = -Math.PI / 2;
+gnd.receiveShadow = true;
+scene.add(gnd);
+
+// Gradient ground ring (inner lighter, outer darker)
+const gndGradRing = new THREE.Mesh(
+  new THREE.RingGeometry(3, 25, 64),
+  new THREE.MeshStandardMaterial({
+    color: 0x4a9a6e, roughness: 1, metalness: 0,
+    transparent: true, opacity: 0.3
+  })
+);
+gndGradRing.rotation.x = -Math.PI / 2;
+gndGradRing.position.y = 0.001;
+scene.add(gndGradRing);
+
+// ── BACKGROUND BLOBS (soft pastel shapes, very far back) ─────────
+const bgBlobs = [];
+const blobData = [
+  { x: -8, y: 5, z: -12, s: 4.5, color: 0x6dbb8e, speed: 0.15 },
+  { x: 7, y: 7, z: -15, s: 5.5, color: 0x8ad4a8, speed: 0.12 },
+  { x: -5, y: 9, z: -18, s: 6, color: 0x5daa7d, speed: 0.1 },
+  { x: 3, y: 3, z: -10, s: 3, color: 0xa3e4bf, speed: 0.18 },
+  { x: -10, y: 2, z: -14, s: 4, color: 0x7ec8a0, speed: 0.13 },
+  { x: 9, y: 0, z: -16, s: 5, color: 0x6ab88d, speed: 0.11 },
+];
+blobData.forEach(d => {
+  const blobMat = new THREE.MeshBasicMaterial({
+    color: d.color, transparent: true, opacity: 0.15
+  });
+  const blob = new THREE.Mesh(new THREE.SphereGeometry(d.s, 24, 24), blobMat);
+  blob.position.set(d.x, d.y, d.z);
+  blob.scale.set(1, 0.6, 0.8);
+  blob.userData = { baseX: d.x, baseY: d.y, speed: d.speed, phase: Math.random() * 6.28 };
+  scene.add(blob);
+  bgBlobs.push(blob);
+});
+
+// ── FOREGROUND FLOATING ELEMENTS (different Z depths) ────────────
+const fgFloaters = [];
+const floaterData = [
+  // LEFT side
+  { e: '💚', x: -5.5, y: 1.8, z: 2, s: 0.7 },
+  { e: '🌿', x: -4.2, y: 3.5, z: -1, s: 0.55 },
+  { e: '🎀', x: -6, y: 0.5, z: 3.5, s: 0.5 },
+  // RIGHT side
+  { e: '⭐', x: 5.2, y: 2.5, z: 1.5, s: 0.65 },
+  { e: '🌸', x: 4.8, y: 4.0, z: -0.5, s: 0.6 },
+  { e: '✨', x: 5.8, y: 0.8, z: 3, s: 0.5 },
+  // BOTTOM foreground (closer to camera)
+  { e: '🍃', x: -3, y: -0.2, z: 5, s: 0.45 },
+  { e: '🌷', x: 3.5, y: -0.1, z: 5.5, s: 0.4 },
+];
+floaterData.forEach(d => {
+  const sp = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: emojiTex(d.e), transparent: true, opacity: 0.7 })
+  );
+  sp.position.set(d.x, d.y, d.z);
+  sp.scale.setScalar(d.s);
+  sp.userData = {
+    baseX: d.x, baseY: d.y,
+    phase: Math.random() * 6.28,
+    speedY: 0.4 + Math.random() * 0.3,
+    speedX: 0.2 + Math.random() * 0.2,
+    ampY: 0.15 + Math.random() * 0.1,
+    ampX: 0.08 + Math.random() * 0.06
+  };
+  sp.renderOrder = 1;
+  scene.add(sp);
+  fgFloaters.push(sp);
+});
+
+// ── AMBIENT DRIFT PARTICLES (always gently floating) ─────────────
+const ambientPfx = [];
+for (let i = 0; i < 25; i++) {
+  const emoji = ['💚', '✨', '🌸', '⭐', '🍃'][i % 5];
+  const sp = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: emojiTex(emoji), transparent: true, opacity: 0.35 })
+  );
+  sp.scale.setScalar(0.12 + Math.random() * 0.15);
+  const x = (Math.random() - 0.5) * 18;
+  const y = Math.random() * 8 - 1;
+  const z = (Math.random() - 0.5) * 14;
+  sp.position.set(x, y, z);
+  sp.userData = {
+    baseX: x, baseY: y,
+    vy: 0.003 + Math.random() * 0.005,
+    vx: (Math.random() - 0.5) * 0.003,
+    phase: Math.random() * 6.28,
+    drift: 0.3 + Math.random() * 0.4
+  };
+  sp.renderOrder = 1;
+  scene.add(sp);
+  ambientPfx.push(sp);
+}
+
+// ── LETTER GLOW LIGHT (behind letter, activates on reveal) ───────
+const letterGlow = new THREE.PointLight(0xfff8e0, 0, 12);
+letterGlow.position.set(0, 2, 2.5);
+scene.add(letterGlow);
+
+// Gift Creation — Premium Present Box
+let giftHoverScale = 1.0;
+(() => {
+  // ── Materials ──────────────────────────────────────────────────
+  const boxMat = new THREE.MeshStandardMaterial({
+    color: 0x95d5b2, roughness: 0.7, metalness: 0.1,
+    emissive: 0x2a6e45, emissiveIntensity: 0.02
+  });
+  const boxBottomMat = new THREE.MeshStandardMaterial({
+    color: 0x7ac49a, roughness: 0.8, metalness: 0.05
+  });
+  const lidMat = new THREE.MeshStandardMaterial({
+    color: 0xa8dfc4, roughness: 0.65, metalness: 0.1,
+    emissive: 0x3a8a5a, emissiveIntensity: 0.03
+  });
+  const ribbonMat = new THREE.MeshStandardMaterial({
+    color: 0xb08968, roughness: 0.35, metalness: 0.2,
+    emissive: 0x8a6a48, emissiveIntensity: 0.12
+  });
+  const bowMat = new THREE.MeshStandardMaterial({
+    color: 0xc9a46c, roughness: 0.3, metalness: 0.25,
+    emissive: 0x9a7a4a, emissiveIntensity: 0.15
+  });
+  const bowKnotMat = new THREE.MeshStandardMaterial({
+    color: 0xffe8c0, roughness: 0.35, metalness: 0.15,
+    emissive: 0xd4a850, emissiveIntensity: 0.1
+  });
+
+  const W = 4.2, H = 2.8, D = 2.4;
+  const RIB_W = 0.28, RIB_OFF = 0.015; // ribbon width & z-offset
+
+  // ── Box Base ───────────────────────────────────────────────────
+  const base = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), boxMat);
+  base.position.y = H / 2;
+  base.castShadow = true; base.receiveShadow = true;
+  giftGroup.add(base);
+
+  // Dark bottom strip (fake bevel / ambient occlusion)
+  const bottomStrip = new THREE.Mesh(
+    new THREE.BoxGeometry(W + 0.01, 0.15, D + 0.01), boxBottomMat
+  );
+  bottomStrip.position.y = 0.075;
+  giftGroup.add(bottomStrip);
+
+  // Inner lip (visible when lid opens) — darker interior
+  const innerLip = new THREE.Mesh(
+    new THREE.BoxGeometry(W - 0.1, 0.2, D - 0.1),
+    new THREE.MeshStandardMaterial({ color: 0x5a9a78, roughness: 0.9, metalness: 0 })
+  );
+  innerLip.position.y = H - 0.1;
+  giftGroup.add(innerLip);
+
+  // ── Base Ribbons ───────────────────────────────────────────────
+  // Vertical ribbon (front-to-back)
+  const vRibBase = new THREE.Mesh(
+    new THREE.BoxGeometry(RIB_W, H + 0.02, D + 0.04), ribbonMat
+  );
+  vRibBase.position.y = H / 2;
+  giftGroup.add(vRibBase);
+
+  // Horizontal ribbon (left-to-right)
+  const hRibBase = new THREE.Mesh(
+    new THREE.BoxGeometry(W + 0.04, RIB_W, D + 0.04), ribbonMat
+  );
+  hRibBase.position.y = H / 2;
+  giftGroup.add(hRibBase);
+
+  // ── Soft shadow disc under box ─────────────────────────────────
+  const shadowDisc = new THREE.Mesh(
+    new THREE.CircleGeometry(2.8, 32),
+    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.12 })
+  );
+  shadowDisc.rotation.x = -Math.PI / 2;
+  shadowDisc.position.y = 0.005;
+  giftGroup.add(shadowDisc);
+
+  // ── Lid ────────────────────────────────────────────────────────
+  lidPivot = new THREE.Group();
+  lidPivot.position.set(0, H, -D / 2);
+  giftGroup.add(lidPivot);
+
+  const lw = W + 0.22, lh = 0.7, ld = D + 0.22;
+  const lidMesh = new THREE.Mesh(new THREE.BoxGeometry(lw, lh, ld), lidMat);
+  lidMesh.position.set(0, lh / 2, ld / 2);
+  lidMesh.castShadow = true;
+  lidPivot.add(lidMesh);
+
+  // Lid bottom interior (darker)
+  const lidInner = new THREE.Mesh(
+    new THREE.PlaneGeometry(lw - 0.1, ld - 0.1),
+    new THREE.MeshStandardMaterial({ color: 0x6aaa8a, roughness: 0.95, metalness: 0 })
+  );
+  lidInner.rotation.x = Math.PI / 2;
+  lidInner.position.set(0, 0.01, ld / 2);
+  lidPivot.add(lidInner);
+
+  // ── Lid Ribbons ────────────────────────────────────────────────
+  // Vertical ribbon on lid
+  const vRibLid = new THREE.Mesh(
+    new THREE.BoxGeometry(RIB_W, lh + 0.02, ld + 0.02), ribbonMat
+  );
+  vRibLid.position.set(0, lh / 2, ld / 2);
+  lidPivot.add(vRibLid);
+
+  // Horizontal ribbon on lid
+  const hRibLid = new THREE.Mesh(
+    new THREE.BoxGeometry(lw + 0.02, lh + 0.02, RIB_W), ribbonMat
+  );
+  hRibLid.position.set(0, lh / 2, ld / 2);
+  lidPivot.add(hRibLid);
+
+  // ── Bow ────────────────────────────────────────────────────────
+  const bowGroup = new THREE.Group();
+  bowGroup.position.set(0, lh + 0.05, ld / 2);
+  lidPivot.add(bowGroup);
+
+  // Two torus loops
+  const loopGeo = new THREE.TorusGeometry(0.35, 0.09, 12, 24);
+  [-1, 1].forEach(side => {
+    const loop = new THREE.Mesh(loopGeo, bowMat);
+    loop.position.set(side * 0.3, 0.12, 0);
+    loop.rotation.y = side * 0.6;
+    loop.rotation.x = -0.3;
+    loop.scale.set(1, 0.7, 0.5);
+    loop.castShadow = true;
+    bowGroup.add(loop);
+  });
+
+  // Center knot
+  const knot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.18, 16, 16), bowKnotMat
+  );
+  knot.position.y = 0.08;
+  knot.scale.set(1, 0.7, 0.8);
+  knot.castShadow = true;
+  bowGroup.add(knot);
+
+  // Ribbon tails (hanging down front) 
+  [-1, 1].forEach(side => {
+    const tailGeo = new THREE.BoxGeometry(0.14, 0.6, 0.04);
+    const tail = new THREE.Mesh(tailGeo, ribbonMat);
+    tail.position.set(side * 0.15, -0.15, 0.12);
+    tail.rotation.z = side * 0.25;
+    tail.rotation.x = 0.15;
+    bowGroup.add(tail);
+  });
+
+  giftClickables = [base, lidMesh];
+})();
+
+// Envelope Creation
+const envGroup = new THREE.Group();
+envGroup.visible = false; envGroup.position.y = -2.0; scene.add(envGroup);
+let envFlapPivot, envClickables = [];
+
+(() => {
+  const EW = 3.6, EH = 2.6;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(EW, EH, .08), mat(0xfffdfa, { roughness: .9 }));
+  body.castShadow = true; envGroup.add(body);
+  
+  // Back interior
+  const backInt = new THREE.Mesh(new THREE.PlaneGeometry(EW - .1, EH - .1), mat(0xead8b4));
+  backInt.position.z = 0.041; envGroup.add(backInt);
+
+  // Side Flaps
+  [[-1, 1], [1, -1]].forEach(([s1, s2]) => {
+    const sh = new THREE.Shape();
+    sh.moveTo(s1 * EW / 2, EH / 2); sh.lineTo(s1 * EW / 2, -EH / 2); sh.lineTo(0, 0); sh.closePath();
+    const m = new THREE.Mesh(new THREE.ShapeGeometry(sh), mat(0xf2e0ba, { roughness: .85, side: THREE.DoubleSide }));
+    m.position.z = .055; m.renderOrder = 20; addEdges(m); envGroup.add(m);
+  });
+  
+  // Bottom Flap
+  const bs = new THREE.Shape();
+  bs.moveTo(-EW / 2, -EH / 2); bs.lineTo(EW / 2, -EH / 2); bs.lineTo(0, 0); bs.closePath();
+  const bm = new THREE.Mesh(new THREE.ShapeGeometry(bs), mat(0xe8d0a0, { roughness: .85, side: THREE.DoubleSide }));
+  bm.position.z = .057; bm.renderOrder = 20; addEdges(bm); envGroup.add(bm);
+  
+  // Red Wax Seal
+  const seal = new THREE.Mesh(new THREE.CircleGeometry(.35, 32), mat(0xd64045, { roughness: .2, metalness: .1, clearcoat: 1.0, emissive: 0x5a1a1c, emissiveIntensity: .2 }));
+  seal.position.set(0, 0, .066); seal.renderOrder = 20; envGroup.add(seal);
+  const sealRing = new THREE.Mesh(new THREE.RingGeometry(.3, .35, 32), mat(0xa82b2f));
+  sealRing.position.set(0, 0, .067); sealRing.renderOrder = 20; envGroup.add(sealRing);
+
+  // Top Flap
+  envFlapPivot = new THREE.Group();
+  envFlapPivot.position.set(0, EH / 2, .046); envGroup.add(envFlapPivot);
+  const fs = new THREE.Shape();
+  fs.moveTo(-EW / 2, 0); fs.lineTo(0, -EH * 0.65); fs.lineTo(EW / 2, 0); fs.closePath();
+  const flap = new THREE.Mesh(new THREE.ShapeGeometry(fs), mat(0xffeed6, { roughness: .8, side: THREE.DoubleSide }));
+  flap.position.z = .002; flap.renderOrder = 10; addEdges(flap); envFlapPivot.add(flap);
+
+  envClickables = [body, seal, flap];
+})();
+
+// Letter Creation
+let letterMesh, stickers = [];
+const makeLetterTex = () => {
+  const W = 512, H = 720, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const c = cv.getContext('2d');
+  const g = c.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#fffefc'); g.addColorStop(1, '#faf6f0');
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  c.strokeStyle = 'rgba(190,165,115,.45)'; c.lineWidth = 6; c.strokeRect(4, 4, W - 8, H - 8);
+  c.strokeStyle = 'rgba(130,195,145,.28)'; c.lineWidth = 1;
+  for (let y = 115; y < H - 25; y += 42) { c.beginPath(); c.moveTo(45, y); c.lineTo(W - 35, y); c.stroke(); }
+  c.fillStyle = '#2e9660'; c.font = '58px Sacramento'; c.textAlign = 'center'; c.fillText('Happy Birthday 🌿', W / 2, 75);
+  c.fillStyle = '#2a1f14'; c.font = 'bold 28px "Cormorant Garamond"'; c.textAlign = 'left';
+  const lines = ['Dear you 🌸', '', 'Happy, happy birthday! 🎂', '', 'Another trip around the sun —', 'and honestly, the world is so', 'much cuter with you in it. ✨', '', 'May today be filled with cake,', 'warm hugs, and all the tiny things', 'that make your heart feel full. 🍰', '', "You deserve every good thing,", "and I'm so glad you exist. 💚"];
+  let y = 125; for (const l of lines) { if (l) { c.fillText(l, 68, y); y += 38; } else { y += 18; } }
+  c.fillStyle = '#2e9660'; c.font = '44px Sacramento'; c.textAlign = 'right'; c.fillText('— With so much love 🌷', W - 38, H - 45);
+  return new THREE.CanvasTexture(cv);
+};
+(() => {
+  const geo = new THREE.PlaneGeometry(2.4, 3.4);
+  const lMat = new THREE.MeshStandardMaterial({
+    map: makeLetterTex(), roughness: .85,
+    emissive: 0xfffcf5, emissiveIntensity: .05,
+    transparent: true, opacity: 0,
+    depthWrite: true, depthTest: true
+  });
+  letterMesh = new THREE.Mesh(geo, lMat);
+  letterMesh.castShadow = true;
+  letterMesh.visible = false;
+  letterMesh.renderOrder = 25; // Always on top of envelope (10–20)
+  scene.add(letterMesh);       // Direct scene child — never inside envelope
+})();
+
+// Stickers
+const STICKER_DATA = [
+  { e: '💚', x: -1.9, y: 2.1, r: .4 }, { e: '🌸', x: 2.0, y: 1.9, r: -.3 }, { e: '⭐', x: -2.1, y: 0.3, r: .6 },
+  { e: '✨', x: 2.15, y: 0.4, r: -.5 }, { e: '🎀', x: -2.0, y: -2.0, r: .3 }, { e: '🍰', x: 1.9, y: -1.95, r: -.4 }
+];
+STICKER_DATA.forEach(d => {
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: emojiTex(d.e), transparent: true, opacity: 0 }));
+  sp.position.set(d.x, d.y, .18); sp.scale.setScalar(.6);
+  sp.userData = { phase: Math.random() * 6.28, baseY: d.y, rotZ: d.r, active: false };
+  sp.visible = false; sp.renderOrder = 20; scene.add(sp); stickers.push(sp);
+});
+
+// Particles
+const pfxPool = [];
+const spawnPfx = (count = 15) => {
+  for (let i = 0; i < count; i++) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: emojiTex(['💚', '✨', '🌸', '⭐'][i % 4]), transparent: true, opacity: 0 }));
+    sp.scale.setScalar(.15 + Math.random() * .2);
+    sp.position.set((Math.random() - .5) * 12, -4, (Math.random() - .5) * 8);
+    sp.userData = { vy: .02 + Math.random() * .03, vx: (Math.random() - .5) * .01, life: 0, maxLife: 200 + Math.random() * 150, alive: true };
+    sp.renderOrder = 20; scene.add(sp); pfxPool.push(sp);
+  }
+};
+
+// ── ANIMATION LOGIC ──────────────────────────────────────────────
+function handleInteraction() {
+  switch (step) {
+    case 0:
+      step = 1; hint.classList.add('hidden');
+      if (window.playMusicOnce) window.playMusicOnce();
+      SFX.pop(); // soft squeeze sound
+      
+      // Anticipation: Compress gift box
+      anim.gSY.target = 0.9;
+      anim.gSX.target = 1.05;
+      
+      setTimeout(() => {
+        // Action: Jump open lid
+        SFX.whoosh(); // lid swoosh
+        anim.gSY.target = 1.0;
+        anim.gSX.target = 1.0;
+        anim.lR.target = -2.6;
+        anim.gI.target = 2.8;
+        envGroup.visible = true;
+        spawnPfx(20);
+        
+        setTimeout(() => { 
+          hint.textContent = 'Tap to pop the envelope out ✉️';
+          hint.style.color = '#ffcf33';  // warm gold
+          hint.classList.remove('hidden'); 
+        }, 800); 
+      }, 150);
+      break;
+
+    case 1:
+      step = 2; hint.classList.add('hidden');
+      
+      // Anticipation: Envelope moves slightly down (compresses)
+      anim.eY.target = 1.3; 
+      
+      setTimeout(() => {
+        // Action: Jump up fast
+        SFX.boing(); // spring pop sound
+        anim.eY.target = 3.2; 
+        anim.eRZ.target = (Math.random() - 0.5) * 0.15; // Random nice tilt
+        spawnPfx(15);
+        
+        setTimeout(() => { hint.textContent = 'Tap the seal to open 🕊️'; hint.style.color = '#ffc147'; hint.classList.remove('hidden'); }, 1000);  // amber gold
+      }, 200);
+      break;
+
+    case 2:
+      step = 3; hint.classList.add('hidden');
+
+      // ── PHASE 1: Open the flap ──────────────────────────────────
+      SFX.snap(); // seal break
+      anim.fR.target = -Math.PI;
+      spawnPfx(20);
+
+      // Seed letter INSIDE envelope in scene-space (no hierarchy clipping)
+      letterMesh.visible = true;
+      anim.lV.val    = 0;              anim.lV.target    = 0;   // hidden until pop
+      anim.lY.val    = anim.eY.val;   anim.lY.target    = anim.eY.val;
+      anim.lZ.val    = envGroup.position.z + 0.05; // Slightly in front — no z-fight
+      anim.lZ.target = envGroup.position.z + 0.05;
+
+      // ── PHASE 2: Auto-pop letter once flap is ~70% open (~700 ms) ──
+      setTimeout(() => {
+        step = 4; // skip step 3 click — no second-click needed
+        hint.classList.add('hidden');
+
+        // Anticipation: nudge letter down
+        anim.lY.target = anim.eY.val - 0.4;
+
+        setTimeout(() => {
+          // JUMP: letter flies up & toward camera
+          // Letter is 4.2 units tall; raise Y so bottom edge (Y - 2.1) clears ground
+          SFX.chime(); // magical reveal
+          anim.lY.target  = 2.2;
+          anim.lZ.target  = 3.2;
+          anim.lRZ.target = (Math.random() - 0.5) * 0.1;
+          anim.lV.target  = 1.0;  // fade in as it pops
+          anim.lI.target  = 2.5;
+          anim.tI.target  = 2.0;
+          spawnPfx(35);
+
+          stickers.forEach((s, i) => setTimeout(() => {
+            s.visible = true; s.userData.active = true;
+            SFX.sparkle(); // tiny sparkle per sticker
+            let op = 0;
+            const fi = setInterval(() => {
+              op = Math.min(op + .05, 1);
+              s.material.opacity = op;
+              if (op >= 1) clearInterval(fi);
+            }, 40);
+          }, 300 + i * 150));
+        }, 160); // brief anticipation hold
+      }, 700); // wait for flap to swing open ~70%
+      break;
+  }
+}
+
+// Click/Touch Detection (pointer events for cross-device)
+const ptr = new THREE.Vector2(), ray = new THREE.Raycaster();
+renderer.domElement.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  ptr.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+  ray.setFromCamera(ptr, camera);
+  
+  const hitsGift = ray.intersectObjects(giftClickables, true).length;
+  const hitsEnv = ray.intersectObjects(envClickables, true).length;
+
+  if (step === 0 && hitsGift) handleInteraction();
+  else if (step === 1 && (hitsGift || hitsEnv)) handleInteraction();
+  else if (step === 2 && hitsEnv) handleInteraction();
+  // step 3 & 4: letter auto-pops — no click needed
+});
+
+// Resize
+window.addEventListener('resize', onResize);
+
+// Parallax (pointer events for mouse + touch)
+let mouseX = 0, mouseY = 0;
+document.addEventListener('pointermove', e => {
+  mouseX = (e.clientX / innerWidth) * 2 - 1;
+  mouseY = -(e.clientY / innerHeight) * 2 + 1;
+});
+
+// Loop
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  Object.values(anim).forEach(s => s.update());
+
+  // Responsive parallax — reduced on mobile
+  const px = deviceCfg.parallax, py = deviceCfg.parallaxY;
+  camera.position.x = lerp(camera.position.x, mouseX * px, .05);
+  camera.position.y = lerp(camera.position.y, deviceCfg.camY + mouseY * py, .05);
+  camera.lookAt(0, 1.0, 0);
+
+  // Apply Spring values + hover glow
+  if (step === 0) {
+    // Hover detection
+    const hoverRay = new THREE.Raycaster();
+    const hoverPtr = new THREE.Vector2(mouseX, mouseY);
+    hoverRay.setFromCamera(hoverPtr, camera);
+    const isHover = hoverRay.intersectObjects(giftClickables, true).length > 0;
+    giftHoverScale = lerp(giftHoverScale, isHover ? 1.03 : 1.0, 0.08);
+    giftLight.intensity = lerp(giftLight.intensity, isHover ? 1.5 : 0, 0.08);
+    renderer.domElement.style.cursor = isHover ? 'pointer' : 'default';
+  }
+  const hS = step === 0 ? giftHoverScale : 1.0;
+  giftGroup.scale.set(anim.gSX.val * hS, anim.gSY.val * hS, anim.gSX.val * hS);
+  
+  if (step === 0) { giftGroup.position.y = Math.sin(t * 1.5) * .1; giftGroup.rotation.y = Math.sin(t * .8) * .03; }
+
+  lidPivot.rotation.x = anim.lR.val;
+  
+  envGroup.position.y = anim.eY.val + (step >= 2 ? Math.sin(t * 1.4) * .06 : 0);
+  envGroup.rotation.z = anim.eRZ.val;
+  
+  envFlapPivot.rotation.x = anim.fR.val;
+
+  if (letterMesh.visible) {
+    // Letter is ALWAYS in scene-space (never clipped by envelope geometry)
+    // step 3  → seeded inside envelope, hidden (opacity=0), awaiting pop
+    // step 4+ → fully animated out toward camera
+    const inEnv  = step === 3;  // tucked inside, fading in during flap open
+    const lFloat = step >= 4 ? Math.sin(t * .6) * .03 : 0;
+    const lBob   = step >= 4 ? Math.sin(t * 1.4) * .04 : 0;
+    const lS     = step >= 4
+      ? 1.0 + Math.sin(t * 2.0) * 0.008   // gentle breathe when out
+      : 0.75;                               // small when tucked in
+
+    letterMesh.position.set(
+      lFloat,
+      anim.lY.val + lBob,
+      anim.lZ.val
+    );
+    letterMesh.scale.setScalar(lS);
+    letterMesh.rotation.y = step >= 4 ? Math.sin(t * .5) * .02 : 0;
+    letterMesh.rotation.z = anim.lRZ.val;
+    letterMesh.material.opacity = anim.lV.val;
+  }
+  
+  // Stickers apply 
+  stickers.forEach(s => {
+    if (s.userData.active) {
+      s.position.y = s.userData.baseY + anim.lY.val + Math.sin(t * 1.3 + s.userData.phase) * .1;
+      s.position.z = anim.lZ.val + .25; 
+      s.material.rotation = s.userData.rotZ + anim.lRZ.val + Math.sin(t * .8 + s.userData.phase) * .1;
+    }
+  });
+
+  giftLight.intensity = anim.gI.val;
+  letterLight.intensity = anim.lI.val;
+  topLamp.intensity = anim.tI.val;
+
+  // Particles
+  pfxPool.forEach((p, i) => {
+    if (!p.userData.alive) return;
+    p.position.y += p.userData.vy; p.position.x += p.userData.vx + Math.sin(p.userData.life * .03) * .005;
+    const pr = p.userData.life / p.userData.maxLife; p.material.opacity = pr < .1 ? pr / .1 : pr > .8 ? 1 - (pr - .8) / .2 : 1;
+    if (++p.userData.life > p.userData.maxLife) { scene.remove(p); p.userData.alive = false; pfxPool.splice(i, 1); }
+  });
+
+  // Background blobs — very slow drift
+  bgBlobs.forEach(b => {
+    const d = b.userData;
+    b.position.x = d.baseX + Math.sin(t * d.speed + d.phase) * 0.8;
+    b.position.y = d.baseY + Math.sin(t * d.speed * 0.7 + d.phase) * 0.5;
+  });
+
+  // Foreground floaters — gentle bob + sway
+  fgFloaters.forEach(f => {
+    const d = f.userData;
+    f.position.x = d.baseX + Math.sin(t * d.speedX + d.phase) * d.ampX;
+    f.position.y = d.baseY + Math.sin(t * d.speedY + d.phase) * d.ampY;
+    f.material.rotation = Math.sin(t * 0.5 + d.phase) * 0.15;
+  });
+
+  // Ambient drift particles — always floating
+  ambientPfx.forEach(p => {
+    const d = p.userData;
+    p.position.y += d.vy;
+    p.position.x += d.vx + Math.sin(t * d.drift + d.phase) * 0.002;
+    // Reset when too high
+    if (p.position.y > 10) {
+      p.position.y = -2;
+      p.position.x = d.baseX + (Math.random() - 0.5) * 4;
+    }
+    p.material.opacity = 0.2 + Math.sin(t * 0.8 + d.phase) * 0.12;
+  });
+
+  // Letter glow — brightens when letter is visible
+  letterGlow.intensity = lerp(letterGlow.intensity, step >= 4 ? 2.0 : 0, 0.04);
+  letterGlow.position.y = anim.lY.val;
+  letterGlow.position.z = anim.lZ.val - 0.5;
+
+  // Subtle camera breathing (device-aware base Z)
+  const camBreath = Math.sin(t * 0.6) * 0.04;
+  camera.position.z = lerp(camera.position.z, deviceCfg.camZ + camBreath, 0.03);
+
+  renderer.render(scene, camera);
+}
+animate();
+
+// Audio
+function btnMusic() {
+  window.playMusicOnce = () => { if (musicStarted) return; musicStarted = true; bgMusic.volume = .4; bgMusic.play().then(() => musicBtn.classList.add('playing')).catch(() => musicStarted = false); };
+  musicBtn.addEventListener('click', () => {
+    if (!musicStarted) { playMusicOnce(); return; }
+    if (bgMusic.paused) { bgMusic.play(); musicBtn.classList.add('playing'); musicBtn.textContent = '🎵'; }
+    else { bgMusic.pause(); musicBtn.classList.remove('playing'); musicBtn.textContent = '🔇'; }
+  });
+}
+btnMusic();
+// Cap initial particles and interval count by device
+spawnPfx(Math.min(10, deviceCfg.maxPfx));
+setInterval(() => { if (step >= 1) spawnPfx(Math.min(3, deviceCfg.maxPfx - pfxPool.length)); }, 1500);
+</script>
+</body>
+</html>

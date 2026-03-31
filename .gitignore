@@ -1,0 +1,30 @@
+# Node / build
+node_modules/
+dist/
+build/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# Three.js large assets (optional)
+*.glb
+*.gltf
+*.bin
+
+# Package manager
+package-lock.json
