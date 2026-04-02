@@ -102,6 +102,27 @@
         radial-gradient(ellipse 50% 55% at 50% 42%, rgba(255, 255, 255, 0.06) 0%, transparent 100%),
         radial-gradient(ellipse at 50% 48%, transparent 22%, rgba(130, 30, 60, 0.28) 62%, rgba(80, 10, 35, 0.60) 100%);
     }
+
+    #tilt-btn {
+      position: fixed;
+      bottom: 90px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 10px 22px;
+      border: none;
+      border-radius: 24px;
+      background: rgba(255, 255, 255, 0.70);
+      backdrop-filter: blur(10px);
+      font-family: 'Quicksand', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: #c2185b;
+      cursor: pointer;
+      z-index: 20;
+      box-shadow: 0 4px 18px rgba(194, 24, 91, 0.25);
+      display: none;
+      animation: hf 2.5s ease-in-out infinite;
+    }
   </style>
   <script type="importmap">
     { "imports": { "three": "./three.module.min.js" } }
@@ -111,6 +132,7 @@
 <body>
   <div id="hint">Click the gift to begin ✨</div>
   <button id="music-btn" aria-label="Toggle music">🎵</button>
+  <button id="tilt-btn" aria-label="Enable tilt control">📱 Enable Tilt</button>
   <audio id="bg-music" loop crossorigin="anonymous"
     src="https://raw.githubusercontent.com/kimberleyroche/birthday-message-site/main/happy-birthday-to-you-piano-version-13976.mp3"></audio>
   <div id="vignette"></div>
@@ -1079,12 +1101,68 @@
     // Resize
     window.addEventListener('resize', onResize);
 
-    // Parallax (pointer events for mouse + touch)
+    // ── PARALLAX — Desktop (pointermove) + Mobile (DeviceOrientation) ──
     let mouseX = 0, mouseY = 0;
-    document.addEventListener('pointermove', e => {
-      mouseX = (e.clientX / innerWidth) * 2 - 1;
-      mouseY = -(e.clientY / innerHeight) * 2 + 1;
-    });
+    let targetX = 0, targetY = 0;   // shared smooth targets used by camera
+    let usingGyro = false;          // true once orientation events are firing
+
+    // ── DESKTOP: pointer / mouse move ───────────────────────────────
+    const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+      || (navigator.maxTouchPoints > 1 && 'ontouchstart' in window);
+
+    if (!isMobile) {
+      document.addEventListener('pointermove', e => {
+        mouseX = (e.clientX / innerWidth) * 2 - 1;
+        mouseY = -(e.clientY / innerHeight) * 2 + 1;
+        targetX = mouseX;
+        targetY = mouseY;
+      });
+    }
+
+    // ── MOBILE: DeviceOrientation ────────────────────────────────────
+    function handleOrientation(event) {
+      if (event.gamma === null || event.beta === null) return;
+      usingGyro = true;
+      const tiltX = event.gamma;   // left/right  −90…+90°
+      const tiltY = event.beta;    // front/back   −180…+180°
+      // Map to the same ±1 range as mouse parallax, then scale
+      targetX =  Math.max(-1, Math.min(1, tiltX  / 45)) * 0.9;
+      targetY = -Math.max(-1, Math.min(1, (tiltY - 30) / 45)) * 0.5; // offset 30° = natural hold angle
+    }
+
+    function startOrientation() {
+      window.addEventListener('deviceorientation', handleOrientation);
+      document.getElementById('tilt-btn').style.display = 'none';
+    }
+
+    if (isMobile) {
+      if (typeof DeviceOrientationEvent !== 'undefined') {
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+          // iOS 13+ — must request after a user gesture
+          const tiltBtn = document.getElementById('tilt-btn');
+          tiltBtn.style.display = 'block';
+          tiltBtn.addEventListener('click', () => {
+            DeviceOrientationEvent.requestPermission()
+              .then(response => {
+                if (response === 'granted') {
+                  startOrientation();
+                } else {
+                  tiltBtn.textContent = '🚫 Tilt denied';
+                  setTimeout(() => { tiltBtn.style.display = 'none'; }, 2000);
+                }
+              })
+              .catch(err => {
+                console.warn('DeviceOrientation permission error:', err);
+                tiltBtn.style.display = 'none';
+              });
+          });
+        } else {
+          // Android / non-iOS — no permission needed
+          startOrientation();
+        }
+      }
+      // If DeviceOrientationEvent is not supported at all, parallax stays static (targetX/Y = 0)
+    }
 
     // Loop
     const clock = new THREE.Clock();
@@ -1094,10 +1172,11 @@
 
       Object.values(anim).forEach(s => s.update());
 
-      // Responsive parallax — reduced on mobile
+      // Responsive parallax — desktop uses mouseX/Y; mobile uses targetX/Y from gyro
       const px = deviceCfg.parallax, py = deviceCfg.parallaxY;
-      camera.position.x = lerp(camera.position.x, mouseX * px, .05);
-      camera.position.y = lerp(camera.position.y, deviceCfg.camY + mouseY * py, .05);
+      // On mobile without gyro support, targetX/Y stay 0 → static camera
+      camera.position.x += (targetX * px - camera.position.x) * 0.05;
+      camera.position.y += (deviceCfg.camY + targetY * py - camera.position.y) * 0.05;
       camera.lookAt(0, 1.0, 0);
 
       // Apply Spring values + hover glow
