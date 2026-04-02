@@ -133,7 +133,7 @@
   <div id="hint">Click the gift to begin ✨</div>
   <button id="music-btn" aria-label="Toggle music">🎵</button>
   <button id="tilt-btn" aria-label="Enable tilt control">📱 Enable Tilt</button>
-  <audio id="bg-music" loop crossorigin="anonymous"
+  <audio id="bg-music" loop preload="auto" crossorigin="anonymous"
     src="https://raw.githubusercontent.com/kimberleyroche/birthday-message-site/main/happy-birthday-to-you-piano-version-13976.mp3"></audio>
   <div id="vignette"></div>
 
@@ -1164,6 +1164,19 @@
       // If DeviceOrientationEvent is not supported at all, parallax stays static (targetX/Y = 0)
     }
 
+    // ── MOBILE: Touch-drag parallax (fallback when gyro unavailable / supplement) ──
+    // Runs on all touch devices; gyro values override targetX/Y when usingGyro is true
+    if (isMobile) {
+      window.addEventListener('touchmove', e => {
+        if (usingGyro) return; // gyro takes priority
+        const touch = e.touches[0];
+        const x = (touch.clientX / window.innerWidth  - 0.5) * 2;  // −1 … +1
+        const y = (touch.clientY / window.innerHeight - 0.5) * 2;  // −1 … +1
+        targetX =  x * 0.5;   // gentle horizontal shift
+        targetY = -y * 0.3;   // gentle vertical shift (inverted so dragging up = camera up)
+      }, { passive: true });
+    }
+
     // Loop
     const clock = new THREE.Clock();
     function animate() {
@@ -1359,16 +1372,39 @@
     }
     animate();
 
-    // Audio
-    function btnMusic() {
-      window.playMusicOnce = () => { if (musicStarted) return; musicStarted = true; bgMusic.volume = .4; bgMusic.play().then(() => musicBtn.classList.add('playing')).catch(() => musicStarted = false); };
-      musicBtn.addEventListener('click', () => {
-        if (!musicStarted) { playMusicOnce(); return; }
-        if (bgMusic.paused) { bgMusic.play(); musicBtn.classList.add('playing'); musicBtn.textContent = '🎵'; }
-        else { bgMusic.pause(); musicBtn.classList.remove('playing'); musicBtn.textContent = '🔇'; }
-      });
-    }
-    btnMusic();
+    // ── AUDIO ────────────────────────────────────────────────────────
+    // playMusicOnce: safe to call from anywhere; idempotent after first success.
+    // We do NOT reset musicStarted on catch — a network blip shouldn't reopen the gate.
+    window.playMusicOnce = () => {
+      if (musicStarted) return;
+      musicStarted = true;
+      bgMusic.volume = 0.4;
+      bgMusic.play()
+        .then(() => musicBtn.classList.add('playing'))
+        .catch(err => {
+          // Autoplay still blocked (shouldn't happen after user gesture, but be safe)
+          console.warn('Music play failed:', err);
+          // Reset so the next genuine gesture can retry
+          musicStarted = false;
+        });
+    };
+
+    // Start music on very first interaction anywhere — covers mobile tap on canvas
+    window.addEventListener('pointerdown', () => playMusicOnce(), { once: true });
+
+    // Music toggle button
+    musicBtn.addEventListener('click', () => {
+      if (!musicStarted) { playMusicOnce(); return; }
+      if (bgMusic.paused) {
+        bgMusic.play();
+        musicBtn.classList.add('playing');
+        musicBtn.textContent = '🎵';
+      } else {
+        bgMusic.pause();
+        musicBtn.classList.remove('playing');
+        musicBtn.textContent = '🔇';
+      }
+    });
     spawnPfx(Math.min(10, deviceCfg.maxPfx));
     setInterval(() => { if (step >= 1) spawnPfx(Math.min(3, deviceCfg.maxPfx - pfxPool.length)); }, 1500);
     // Background fireworks — every 2.5–4s after box opens, capped at 28 particles total
